@@ -83,13 +83,15 @@ def get_proportion_of_mis_vs_correct(year_array_mis, year_array_cor, years_array
 # ----------------------------------------------------------------------------
 # Plots
 # ----------------------------------------------------------------------------
-def p_to_stars(p):
-    return "ns" if p >= 0.05 else ("*" if p >= 0.01 else ("**" if p >= 0.001 else ("***" if p >= 1e-4 else "****")))
+def p_to_stars(p, n_tests=1):
+    """Stars for p, with the thresholds Bonferroni corrected for ``n_tests`` comparisons."""
+    t = np.array([0.05, 0.01, 0.001, 1e-4]) / n_tests
+    return "ns" if p >= t[0] else ("*" if p >= t[1] else ("**" if p >= t[2] else ("***" if p >= t[3] else "****")))
 
 
-def add_sig(ax, x1, x2, y, h, p, fontsize=12):
+def add_sig(ax, x1, x2, y, h, p, fontsize=12, n_tests=1):
     """Draws a significance bracket from x1 to x2 at y (data coords)."""
-    star = p_to_stars(p)
+    star = p_to_stars(p, n_tests)
     ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y], lw=1.5, color="black")
     ax.text((x1 + x2) / 2, y + h, star, ha="center", va="bottom", fontsize=fontsize)
 
@@ -103,13 +105,14 @@ def _style_top_axis_grid(ax, ax_top):
     ax.patch.set_visible(False)
 
 
-def plot_years_mislabelled(input_mislabelled_array, input_per_year_count_array, y_lim=0.3, inp_title="", fig_title=""):
-    """Misclassification rate (with Wilson 95% CI) per year before the most recent visit."""
-    k = np.asarray(copy.deepcopy(input_mislabelled_array), dtype=float)       # mislabel counts per bin
-    n = np.asarray(copy.deepcopy(input_per_year_count_array), dtype=float)    # total samples per bin
+def plot_years_mislabelled(input_mislabelled_array, input_per_year_count_array, y_lim=0.3, inp_title="", fig_title="",
+                           max_years=5, alternative="larger"):
+    """Misclassification rate (with Wilson 95% CI) per year before the most recent visit, with
+    Bonferroni corrected z-test significance brackets between all pairs of the first ``max_years`` bins."""
+    k = np.asarray(copy.deepcopy(input_mislabelled_array), dtype=float)[:max_years]       # mislabel counts per bin
+    n = np.asarray(copy.deepcopy(input_per_year_count_array), dtype=float)[:max_years]    # total samples per bin
 
     labels = [f"[{i}-{i+1})" for i in range(len(k))]
-    labels[-1] = "[" + str(len(k) - 1) + "-" + str(len(n)) + ")"
 
     rate = np.where(n > 0, k / n, np.nan)
     ci_lo, ci_hi = proportion_confint(k, n, method="wilson")
@@ -126,10 +129,31 @@ def plot_years_mislabelled(input_mislabelled_array, input_per_year_count_array, 
     ax.set_xlabel("Years since recent recorded visit")
 
     # Bonferroni adjusted significance thresholds for all pairwise bin comparisons
-    count_combinations = len(list(itertools.combinations(range(len(k)), 2)))
+    pairs = list(itertools.combinations(range(len(k)), 2))
+    count_combinations = len(pairs)
     print("Num combinations =", count_combinations)
     for alpha in [0.05, 0.01, 0.001, 0.0001]:
         print("Adjusted p-values for", alpha, alpha / count_combinations)
+
+    offset = 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0])  # vertical spacing
+    levels = {}  # stack brackets if they overlap
+    for (i, j) in pairs:
+        if n[i] == 0 or n[j] == 0:
+            continue
+        stat, pval = proportions_ztest([k[i], k[j]], [n[i], n[j]], alternative=alternative)
+        print(f"{labels[i]} vs {labels[j]}: p = {pval:.3g} ({p_to_stars(pval, count_combinations)})")
+        if pval >= 0.05 / count_combinations:
+            continue
+
+        top_ij = np.nanmax(ci_hi)  # common base so the stacked brackets never collide
+        level = levels.get((i, j), 0)
+        for (a, b), L in list(levels.items()):
+            if (i <= b and j >= a) and L >= level:
+                level = L + 1
+        levels[(i, j)] = level
+
+        y = top_ij + offset * (1.8 + level * 3.2)
+        add_sig(ax, i, j, y, h=offset * 0.8, p=pval, n_tests=count_combinations)
 
     ax_top = ax.twiny()
     ax_top.set_xlim(ax.get_xlim())
